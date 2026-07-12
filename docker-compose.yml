@@ -1,0 +1,10 @@
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    user: root:root
+    env_file:
+      - .env
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
