@@ -1,5 +1,11 @@
 # USB Traffic Light MQTT Bridge
 
+[![Tests](https://github.com/pfichtner/usb-traffic-light-mqtt-bridge/actions/workflows/tests.yml/badge.svg)](https://github.com/pfichtner/usb-traffic-light-mqtt-bridge/actions/workflows/tests.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/pfichtner/usb-traffic-light-mqtt-bridge/blob/main/LICENSE)
+[![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
+[![codecov](https://codecov.io/gh/pfichtner/usb-traffic-light-mqtt-bridge/graph/badge.svg)](https://codecov.io/gh/pfichtner/usb-traffic-light-mqtt-bridge)
+
 ```
 MQTT Broker ──► usb-traffic-light-mqtt-bridge ──► USB Ampel
 ```
