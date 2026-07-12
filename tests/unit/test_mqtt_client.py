@@ -219,6 +219,123 @@ class TestMQTTBridgeOnMessage:
         assert bridge._active_leds == {Color.RED, Color.GREEN}
 
 
+class TestMQTTBridgePatternTopic:
+    def _make_bridge(self, prefix: str = "cleware/ampel/") -> MQTTBridge:
+        light = MockTrafficLight()
+        config = BridgeConfig(mqtt_topic_prefix=prefix)
+        bridge = MQTTBridge(config, light)
+        bridge._light = light
+        return bridge
+
+    def _make_msg(self, topic: str, payload: str) -> mqtt.MQTTMessage:
+        msg = MagicMock(spec=mqtt.MQTTMessage)
+        msg.topic = topic
+        msg.payload = payload.encode("utf-8")
+        return msg
+
+    def test_all_off_clears_active_leds(self) -> None:
+        bridge = self._make_bridge()
+        for color in (Color.RED, Color.YELLOW, Color.GREEN):
+            bridge._light.set_led(color, LEDState.ON)
+        msg = self._make_msg("cleware/ampel/pattern", "all_off")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        assert bridge._light.active_colors == set()
+        assert bridge._active_leds == set()
+
+    def test_all_on_lights_every_led(self) -> None:
+        bridge = self._make_bridge()
+        msg = self._make_msg("cleware/ampel/pattern", "all_on")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        assert bridge._light.active_colors == {Color.RED, Color.YELLOW, Color.GREEN}
+        assert bridge._active_leds == {Color.RED, Color.YELLOW, Color.GREEN}
+
+    def test_combination_pattern_turns_others_off(self) -> None:
+        bridge = self._make_bridge()
+        bridge._light.set_led(Color.YELLOW, LEDState.ON)
+        msg = self._make_msg("cleware/ampel/pattern", "red+green")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        assert bridge._light.active_colors == {Color.RED, Color.GREEN}
+        assert bridge._active_leds == {Color.RED, Color.GREEN}
+
+    def test_single_color_pattern_turns_others_off(self) -> None:
+        bridge = self._make_bridge()
+        bridge._light.set_led(Color.RED, LEDState.ON)
+        bridge._light.set_led(Color.GREEN, LEDState.ON)
+        msg = self._make_msg("cleware/ampel/pattern", "yellow")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        assert bridge._light.active_colors == {Color.YELLOW}
+        assert bridge._active_leds == {Color.YELLOW}
+
+    def test_pattern_is_case_insensitive(self) -> None:
+        bridge = self._make_bridge()
+        msg = self._make_msg("cleware/ampel/pattern", "RED+GREEN")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        assert bridge._light.active_colors == {Color.RED, Color.GREEN}
+
+    def test_invalid_pattern_no_state_change(self) -> None:
+        bridge = self._make_bridge()
+        bridge._on_message(None, None, self._make_msg("cleware/ampel/red", "1"))  # type: ignore[arg-type]
+        msg = self._make_msg("cleware/ampel/pattern", "purple+blue")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        assert bridge._light.active_colors == {Color.RED}
+        assert bridge._active_leds == {Color.RED}
+
+    def test_invalid_pattern_unknown_named_no_state_change(self) -> None:
+        bridge = self._make_bridge()
+        bridge._on_message(None, None, self._make_msg("cleware/ampel/red", "1"))  # type: ignore[arg-type]
+        msg = self._make_msg("cleware/ampel/pattern", "hazard")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        assert bridge._light.active_colors == {Color.RED}
+        assert bridge._active_leds == {Color.RED}
+
+    def test_per_color_topic_still_works_after_pattern(self) -> None:
+        bridge = self._make_bridge()
+        msg = self._make_msg("cleware/ampel/pattern", "all_on")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        msg_green_off = self._make_msg("cleware/ampel/green", "0")
+        bridge._on_message(None, None, msg_green_off)  # type: ignore[arg-type]
+        assert Color.GREEN not in bridge._light.active_colors
+        assert Color.RED in bridge._light.active_colors
+        assert Color.YELLOW in bridge._light.active_colors
+        assert bridge._active_leds == {Color.RED, Color.YELLOW}
+
+    def test_pattern_after_per_color_overwrites_state(self) -> None:
+        bridge = self._make_bridge()
+        bridge._light.set_led(Color.RED, LEDState.ON)
+        bridge._light.set_led(Color.GREEN, LEDState.ON)
+        bridge._active_leds = {Color.RED, Color.GREEN}
+        msg = self._make_msg("cleware/ampel/pattern", "all_off")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        assert bridge._light.active_colors == set()
+        assert bridge._active_leds == set()
+
+    def test_pattern_custom_prefix(self) -> None:
+        bridge = self._make_bridge(prefix="custom/ampel/")
+        msg = self._make_msg("custom/ampel/pattern", "red+green")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        assert bridge._light.active_colors == {Color.RED, Color.GREEN}
+
+    def test_pattern_nested_subtopic_ignored(self) -> None:
+        # Reserved namespace `pattern/anim/...` is not handled yet and must
+        # be ignored without side effects (see ADR 012).
+        bridge = self._make_bridge()
+        bridge._on_message(None, None, self._make_msg("cleware/ampel/red", "1"))  # type: ignore[arg-type]
+        msg = self._make_msg("cleware/ampel/pattern/anim/hazard", "1")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        assert bridge._light.active_colors == {Color.RED}
+        assert bridge._active_leds == {Color.RED}
+
+    def test_pattern_set_led_error_logged(self) -> None:
+        bridge = self._make_bridge()
+        bridge._client = MagicMock()
+        bridge._light.set_disconnected()
+        msg = self._make_msg("cleware/ampel/pattern", "all_on")
+        bridge._on_message(None, None, msg)  # type: ignore[arg-type]
+        # Hardware failure must not raise and must not corrupt tracked state
+        # beyond the LED state we attempted to set.
+        assert bridge._active_leds == set()
+
+
 class TestMQTTBridgeSubscribeTopics:
     def test_default_topics(self) -> None:
         light = MockTrafficLight()

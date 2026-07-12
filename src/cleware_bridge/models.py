@@ -51,6 +51,52 @@ TOPIC_COLOR_MAP: dict[str, Color] = {
     "green": Color.GREEN,
 }
 
+# Reserved topic suffix for pattern commands.
+PATTERN_TOPIC_SUFFIX: str = "pattern"
+
+# Named whole-device patterns. Each entry maps a pattern name to the set of
+# LEDs that should be ON after applying the pattern; every other LED is turned
+# OFF. Names are matched case-insensitively and after trimming whitespace.
+NAMED_PATTERNS: dict[str, frozenset[Color]] = {
+    "all_off": frozenset(),
+    "all_on": frozenset(Color),
+}
+
+
+def parse_pattern(payload: str) -> frozenset[Color] | None:
+    """Parse a pattern payload to a set of colors.
+
+    Accepted forms (case-insensitive, surrounding whitespace stripped):
+
+    - A named pattern from :data:`NAMED_PATTERNS` (e.g. ``all_off``, ``all_on``)
+    - A ``+``-joined combination of color names, e.g. ``red+green`` or
+      ``red + yellow + green``. Colors are resolved via :meth:`Color.from_name`.
+
+    Returns:
+        A :class:`frozenset` of :class:`Color` members, or ``None`` if the
+        payload is empty or contains an unknown name or color.
+    """
+    normalized = payload.strip().lower()
+    if not normalized:
+        return None
+
+    if normalized in NAMED_PATTERNS:
+        return NAMED_PATTERNS[normalized]
+
+    parts = [part.strip() for part in normalized.split("+")]
+    # Reject empty parts (e.g. "red+", "+red", "red++green") and the trivial
+    # "+"/empty combination.
+    if not all(parts) or any(part == "" for part in parts):
+        return None
+
+    colors: set[Color] = set()
+    for part in parts:
+        try:
+            colors.add(Color.from_name(part))
+        except ValueError:
+            return None
+    return frozenset(colors)
+
 
 @dataclass
 class TrafficLightState:

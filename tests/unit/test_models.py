@@ -4,7 +4,14 @@ from datetime import datetime
 
 import pytest
 
-from cleware_bridge.models import Color, LEDState, TrafficLightState
+from cleware_bridge.models import (
+    NAMED_PATTERNS,
+    PATTERN_TOPIC_SUFFIX,
+    Color,
+    LEDState,
+    TrafficLightState,
+    parse_pattern,
+)
 
 
 class TestColor:
@@ -72,3 +79,78 @@ class TestTrafficLightState:
         original: set[Color] = {Color.RED}
         state = TrafficLightState(active_colors=original)
         assert state.active_colors is original
+
+
+class TestParsePattern:
+    def test_all_off_named(self) -> None:
+        assert parse_pattern("all_off") == frozenset()
+
+    def test_all_on_named(self) -> None:
+        assert parse_pattern("all_on") == frozenset(Color)
+
+    def test_named_case_insensitive(self) -> None:
+        assert parse_pattern("ALL_OFF") == frozenset()
+        assert parse_pattern("All_On") == frozenset(Color)
+
+    def test_named_with_whitespace(self) -> None:
+        assert parse_pattern("  all_off  ") == frozenset()
+
+    def test_single_color(self) -> None:
+        assert parse_pattern("red") == frozenset({Color.RED})
+
+    def test_two_colors(self) -> None:
+        assert parse_pattern("red+green") == frozenset({Color.RED, Color.GREEN})
+
+    def test_three_colors(self) -> None:
+        assert parse_pattern("red+yellow+green") == frozenset(Color)
+
+    def test_plus_with_spaces(self) -> None:
+        assert parse_pattern("red + green") == frozenset({Color.RED, Color.GREEN})
+
+    def test_case_insensitive_colors(self) -> None:
+        assert parse_pattern("RED+GREEN") == frozenset({Color.RED, Color.GREEN})
+
+    def test_duplicate_colors_collapse(self) -> None:
+        assert parse_pattern("red+red") == frozenset({Color.RED})
+
+    def test_unknown_color_returns_none(self) -> None:
+        assert parse_pattern("red+blue") is None
+
+    def test_unknown_named_returns_none(self) -> None:
+        assert parse_pattern("foo") is None
+
+    def test_empty_returns_none(self) -> None:
+        assert parse_pattern("") is None
+        assert parse_pattern("   ") is None
+
+    def test_leading_plus_returns_none(self) -> None:
+        assert parse_pattern("+red") is None
+
+    def test_trailing_plus_returns_none(self) -> None:
+        assert parse_pattern("red+") is None
+
+    def test_double_plus_returns_none(self) -> None:
+        assert parse_pattern("red++green") is None
+
+    def test_bare_plus_returns_none(self) -> None:
+        assert parse_pattern("+") is None
+
+    def test_named_patterns_constant(self) -> None:
+        assert NAMED_PATTERNS["all_off"] == frozenset()
+        assert NAMED_PATTERNS["all_on"] == frozenset(Color)
+        assert len(NAMED_PATTERNS) == 2
+
+    def test_pattern_topic_suffix_constant(self) -> None:
+        assert PATTERN_TOPIC_SUFFIX == "pattern"
+
+    def test_returns_frozenset(self) -> None:
+        result = parse_pattern("red")
+        assert isinstance(result, frozenset)
+
+
+class TestParsePatternColorMembership:
+    def test_yellow_in_result(self) -> None:
+        assert parse_pattern("yellow") == frozenset({Color.YELLOW})
+
+    def test_yellow_and_green(self) -> None:
+        assert parse_pattern("yellow+green") == frozenset({Color.YELLOW, Color.GREEN})

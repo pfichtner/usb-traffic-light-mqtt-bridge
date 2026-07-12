@@ -7,7 +7,13 @@ import uuid
 import paho.mqtt.client as mqtt
 
 from .config import BridgeConfig
-from .models import TOPIC_COLOR_MAP, Color, LEDState
+from .models import (
+    PATTERN_TOPIC_SUFFIX,
+    TOPIC_COLOR_MAP,
+    Color,
+    LEDState,
+    parse_pattern,
+)
 from .traffic_light import TrafficLight
 
 logger = logging.getLogger(__name__)
@@ -97,11 +103,16 @@ class MQTTBridge:
             return
 
         suffix = topic[len(prefix) :].strip("/")
+        payload_str = msg.payload.decode("utf-8", errors="replace")
+
+        if suffix == PATTERN_TOPIC_SUFFIX:
+            self._apply_pattern(payload_str)
+            return
+
         if suffix not in TOPIC_COLOR_MAP:
             return
 
         color = TOPIC_COLOR_MAP[suffix]
-        payload_str = msg.payload.decode("utf-8", errors="replace")
 
         logger.info("Received command on %s: payload=%s", topic, payload_str)
 
@@ -120,6 +131,32 @@ class MQTTBridge:
                 logger.info("LED %s OFF (active: %s)", color.to_name(), self._active_leds)
         except Exception as exc:
             logger.error("Failed to set LED %s: %s", color.to_name(), exc)
+
+    def _apply_pattern(self, payload_str: str) -> None:
+        """Apply a whole-device pattern, setting all LEDs atomically.
+
+        LEDs in the parsed pattern are turned ON; every other LED is turned OFF.
+        On an invalid pattern, a warning is logged and the device state is
+        left unchanged.
+        """
+        logger.info("Received pattern command: payload=%s", payload_str)
+        pattern = parse_pattern(payload_str)
+        if pattern is None:
+            logger.warning("Invalid pattern payload: %r", payload_str)
+            return
+
+        try:
+            for color in Color:
+                target = LEDState.ON if color in pattern else LEDState.OFF
+                self._light.set_led(color, target)
+            self._active_leds = set(pattern)
+            logger.info(
+                "Pattern applied: %s (active: %s)",
+                payload_str.strip(),
+                self._active_leds,
+            )
+        except Exception as exc:
+            logger.error("Failed to apply pattern %r: %s", payload_str, exc)
 
     def _parse_brightness(self, payload: str) -> int | None:
         normalized = payload.strip().lower()

@@ -80,8 +80,25 @@ All settings via environment variables:
 | `cleware/ampel/red` | `0` or `1` | Red: 0=off, 1=on |
 | `cleware/ampel/yellow` | `0` or `1` | Yellow: 0=off, 1=on |
 | `cleware/ampel/green` | `0` or `1` | Green: 0=off, 1=on |
+| `cleware/ampel/pattern` | pattern string | Set the whole light at once (see below) |
 
 Each LED is controlled independently. Switching one LED has no effect on the others.
+
+#### Pattern topic
+
+`cleware/ampel/pattern` accepts a pattern string and sets the whole traffic
+light atomically — LEDs in the pattern turn on, every other LED turns off.
+This replaces multiple per-color publishes with one.
+
+| Payload | Result |
+|---|---|
+| `all_off` | All LEDs off |
+| `all_on` | All LEDs on |
+| `red` | Only red on |
+| `red+green` | Red and green on, yellow off |
+| `red+yellow+green` | All LEDs on (same as `all_on`) |
+
+Names are case-insensitive. Unknown patterns are logged and ignored.
 
 ### Examples
 
@@ -105,6 +122,16 @@ All off:
 mosquitto_pub -h localhost -t "cleware/ampel/red" -m "0"
 mosquitto_pub -h localhost -t "cleware/ampel/yellow" -m "0"
 mosquitto_pub -h localhost -t "cleware/ampel/green" -m "0"
+```
+
+All off (one publish via the pattern topic):
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern" -m "all_off"
+```
+
+Red + green on, yellow off (one publish):
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern" -m "red+green"
 ```
 
 ## Hardware
