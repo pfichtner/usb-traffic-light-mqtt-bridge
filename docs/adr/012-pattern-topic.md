@@ -29,7 +29,7 @@ without adopting an arbitrary JSON schema or weakening the per-color topics.
 Add an additive, optional convenience topic:
 
 ```
-{prefix}pattern   e.g. cleware/ampel/pattern
+{prefix}/pattern   e.g. cleware/ampel/pattern
 ```
 
 The payload is a **pattern string** (not an integer). It is parsed by the new
