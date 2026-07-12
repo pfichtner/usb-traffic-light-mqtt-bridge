@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import paho.mqtt.client as mqtt
+import pytest
 
 from cleware_bridge.config import BridgeConfig
 from cleware_bridge.models import Color, LEDState
