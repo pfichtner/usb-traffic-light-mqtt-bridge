@@ -81,8 +81,10 @@ All settings via environment variables:
 | `cleware/ampel/yellow` | `0` or `1` | Yellow: 0=off, 1=on |
 | `cleware/ampel/green` | `0` or `1` | Green: 0=off, 1=on |
 | `cleware/ampel/pattern` | pattern string | Set the whole light at once (see below) |
+| `cleware/ampel/pattern/anim/<name>` | JSON object | Start an animation, e.g. `blink`, `chase`, `bounce` (see below) |
 
 Each LED is controlled independently. Switching one LED has no effect on the others.
+Any command (per-color, `pattern`, or a new animation) cancels a running animation.
 
 #### Pattern topic
 
@@ -99,6 +101,35 @@ This replaces multiple per-color publishes with one.
 | `red+yellow+green` | All LEDs on (same as `all_on`) |
 
 Names are case-insensitive. Unknown patterns are logged and ignored.
+
+#### Animated patterns
+
+`cleware/ampel/pattern/anim/<name>` starts a server-side animation that keeps
+running on the bridge even after the publishing client disconnects. `<name>`
+selects one of three built-in animations:
+
+| Name | Behavior |
+|---|---|
+| `blink` | Toggle the listed colors on/off together each step |
+| `chase` | One color on at a time, cycling forward through `colors` order |
+| `bounce` | One color on at a time, forward then backward (Knight-Rider style) |
+
+The payload is an optional JSON object. Every field is optional; an empty
+payload uses the defaults (blink all colors, infinite, 500 ms steps).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `speed_ms` | integer | `500` | Milliseconds between steps. Values below `100` are clamped to `100`. |
+| `repeats` | integer | `0` | Number of complete cycles. `0` means infinite — runs until cancelled. |
+| `colors` | array of strings | all colors | Ordered list of color names to animate. Order matters for `chase` and `bounce`. |
+
+Any subsequent command — a per-color message, a static `pattern` publish, or a
+new animation — cancels the running animation. There is no explicit stop
+topic. Animations are fire-and-forget: the bridge does not publish animation
+status, and `pattern/anim/*` messages must not be retained.
+
+Unknown animation names and invalid JSON payloads are logged and ignored, and
+leave any running animation untouched.
 
 ### Examples
 
@@ -132,6 +163,28 @@ mosquitto_pub -h localhost -t "cleware/ampel/pattern" -m "all_off"
 Red + green on, yellow off (one publish):
 ```bash
 mosquitto_pub -h localhost -t "cleware/ampel/pattern" -m "red+green"
+```
+
+Blink all LEDs, infinite, defaults (one publish):
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern/anim/blink" -m ""
+```
+
+Chase red → green, fast, 10 cycles:
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern/anim/chase" \
+  -m '{"speed_ms":250,"repeats":10,"colors":["red","green"]}'
+```
+
+Bounce all LEDs, slow, infinite:
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern/anim/bounce" \
+  -m '{"speed_ms":1000}'
+```
+
+Stop the running animation (any command cancels):
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern" -m "all_off"
 ```
 
 ## Hardware

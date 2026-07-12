@@ -315,15 +315,17 @@ class TestMQTTBridgePatternTopic:
         bridge._on_message(None, None, msg)  # type: ignore[arg-type]
         assert bridge._light.active_colors == {Color.RED, Color.GREEN}
 
-    def test_pattern_nested_subtopic_ignored(self) -> None:
-        # Reserved namespace `pattern/anim/...` is not handled yet and must
-        # be ignored without side effects (see ADR 012).
+    def test_pattern_anim_unknown_name_ignored(self) -> None:
+        # The `pattern/anim/<name>` namespace is now dispatched (ADR 013), but
+        # unknown animation names are rejected with a warning and leave device
+        # state — and any running animation — untouched.
         bridge = self._make_bridge()
         bridge._on_message(None, None, self._make_msg("cleware/ampel/red", "1"))  # type: ignore[arg-type]
         msg = self._make_msg("cleware/ampel/pattern/anim/hazard", "1")
         bridge._on_message(None, None, msg)  # type: ignore[arg-type]
         assert bridge._light.active_colors == {Color.RED}
         assert bridge._active_leds == {Color.RED}
+        assert bridge._anim_thread is None
 
     def test_pattern_set_led_error_logged(self) -> None:
         bridge = self._make_bridge()
@@ -334,6 +336,163 @@ class TestMQTTBridgePatternTopic:
         # Hardware failure must not raise and must not corrupt tracked state
         # beyond the LED state we attempted to set.
         assert bridge._active_leds == set()
+
+
+class TestMQTTBridgeAnimTopic:
+    """Animated pattern dispatch, threading, and cancellation (ADR 013)."""
+
+    def _make_bridge(self, prefix: str = "cleware/ampel/") -> MQTTBridge:
+        light = MockTrafficLight()
+        config = BridgeConfig(mqtt_topic_prefix=prefix)
+        bridge = MQTTBridge(config, light)
+        bridge._light = light
+        return bridge
+
+    def _make_msg(self, topic: str, payload: str) -> mqtt.MQTTMessage:
+        msg = MagicMock(spec=mqtt.MQTTMessage)
+        msg.topic = topic
+        msg.payload = payload.encode("utf-8")
+        return msg
+
+    def _send(self, bridge: MQTTBridge, topic: str, payload: str) -> None:
+        bridge._on_message(None, None, self._make_msg(topic, payload))  # type: ignore[arg-type]
+
+    def _wait_anim_done(self, bridge: MQTTBridge, timeout: float = 3.0) -> None:
+        thread = bridge._anim_thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+
+    def test_unknown_anim_name_ignored(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/red", "1")
+        self._send(bridge, "cleware/ampel/pattern/anim/hazard", "")
+        assert bridge._light.active_colors == {Color.RED}
+        assert bridge._active_leds == {Color.RED}
+        assert bridge._anim_thread is None
+
+    def test_invalid_json_ignored_no_cancel(self) -> None:
+        bridge = self._make_bridge()
+        # A finite blink (repeats=1) so the worker thread terminates on its own.
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", '{"repeats":1,"speed_ms":100}')
+        first_thread = bridge._anim_thread
+        assert first_thread is not None
+        # An invalid JSON payload to a valid anim topic is a no-op: it must
+        # not cancel the running animation (ADR 013 invalid-command policy).
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", "{bad")
+        assert bridge._anim_thread is first_thread
+        first_thread.join(timeout=3.0)
+        assert not first_thread.is_alive()
+        # blink repeats=1 ends with the off frame.
+        assert bridge._light.active_colors == set()
+        assert bridge._active_leds == set()
+
+    def test_blink_finite_ends_off(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", '{"repeats":1,"speed_ms":100}')
+        thread = bridge._anim_thread
+        assert thread is not None
+        thread.join(timeout=3.0)
+        assert not thread.is_alive()
+        # blink cycle is [all_on, all_off]; after one repeat LEDs are off.
+        assert bridge._light.active_colors == set()
+
+    def test_chase_finite_last_frame(self) -> None:
+        bridge = self._make_bridge()
+        self._send(
+            bridge,
+            "cleware/ampel/pattern/anim/chase",
+            '{"repeats":1,"speed_ms":100,"colors":["red","green"]}',
+        )
+        self._wait_anim_done(bridge)
+        assert bridge._light.active_colors == {Color.GREEN}
+
+    def test_per_color_cancels_animation(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", '{"speed_ms":100}')
+        assert bridge._anim_thread is not None
+        # A per-color command cancels the running animation and applies.
+        self._send(bridge, "cleware/ampel/red", "1")
+        assert bridge._anim_thread is None
+        assert Color.RED in bridge._light.active_colors
+        assert Color.RED in bridge._active_leds
+
+    def test_pattern_cancels_animation(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", '{"speed_ms":100}')
+        assert bridge._anim_thread is not None
+        # all_off cancels and clears every LED deterministically.
+        self._send(bridge, "cleware/ampel/pattern", "all_off")
+        assert bridge._anim_thread is None
+        assert bridge._light.active_colors == set()
+        assert bridge._active_leds == set()
+
+    def test_new_anim_cancels_previous(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", '{"speed_ms":100}')
+        first_thread = bridge._anim_thread
+        assert first_thread is not None
+        self._send(bridge, "cleware/ampel/pattern/anim/chase", '{"speed_ms":100}')
+        # Starting a new animation cancels the previous worker thread...
+        first_thread.join(timeout=3.0)
+        assert not first_thread.is_alive()
+        # ...and starts a new one.
+        assert bridge._anim_thread is not None
+        assert bridge._anim_thread is not first_thread
+        # Clean up the still-running infinite animation.
+        self._send(bridge, "cleware/ampel/pattern", "all_off")
+        assert bridge._anim_thread is None
+
+    def test_invalid_payload_before_valid_anim_no_cancel_branch(self) -> None:
+        # An invalid anim payload neither cancels a running anim nor starts one.
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", '{"repeats":-1}')
+        assert bridge._anim_thread is None
+
+    def test_anim_custom_prefix(self) -> None:
+        bridge = self._make_bridge(prefix="custom/ampel/")
+        self._send(
+            bridge,
+            "custom/ampel/pattern/anim/chase",
+            '{"repeats":1,"speed_ms":100,"colors":["red"]}',
+        )
+        self._wait_anim_done(bridge)
+        assert bridge._light.active_colors == {Color.RED}
+
+    def test_hardware_error_aborts_animation(self) -> None:
+        bridge = self._make_bridge()
+        bridge._light.set_disconnected()
+        self._send(bridge, "cleware/ampel/pattern/anim/chase", '{"repeats":1,"speed_ms":100}')
+        thread = bridge._anim_thread
+        assert thread is not None
+        thread.join(timeout=3.0)
+        # The worker aborts on the first hardware error and does not spin.
+        assert not thread.is_alive()
+        # After reconnecting, a direct command works and resets anim state.
+        bridge._light.set_connected()
+        self._send(bridge, "cleware/ampel/red", "1")
+        assert Color.RED in bridge._light.active_colors
+        assert bridge._anim_thread is None
+
+    def test_stop_cancels_running_animation(self) -> None:
+        bridge = self._make_bridge()
+        bridge._client = MagicMock()
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", '{"speed_ms":100}')
+        thread = bridge._anim_thread
+        assert thread is not None
+        bridge.stop()
+        assert bridge._anim_thread is None
+        assert not thread.is_alive()
+        bridge._client.disconnect.assert_called_once()
+        bridge._client.loop_stop.assert_called_once()
+
+    def test_anim_does_not_publish_state(self) -> None:
+        # Fire-and-forget: starting an animation must not publish anything.
+        bridge = self._make_bridge()
+        bridge._client = MagicMock()
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", '{"speed_ms":100}')
+        bridge._client.publish.assert_not_called()
+        # Clean up.
+        self._send(bridge, "cleware/ampel/pattern", "all_off")
 
 
 class TestMQTTBridgeSubscribeTopics:
