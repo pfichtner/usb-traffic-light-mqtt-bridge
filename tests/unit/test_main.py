@@ -36,18 +36,14 @@ class TestCreateTrafficLight:
 
             assert isinstance(light, ClewareTrafficLight)
 
-    def test_auto_backend_no_device_exits_abnormally(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_auto_backend_no_device_exits_abnormally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LIGHT_BACKEND", raising=False)
         with patch("cleware_bridge.cleware.usb.core.find", return_value=None):
             with pytest.raises(SystemExit) as exc_info:
                 _create_traffic_light(MagicMock())
             assert exc_info.value.code == 1
 
-    def test_auto_backend_exception_exits_abnormally(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_auto_backend_exception_exits_abnormally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LIGHT_BACKEND", raising=False)
         with patch(
             "cleware_bridge.cleware.usb.core.find",

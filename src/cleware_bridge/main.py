@@ -56,9 +56,7 @@ def _create_traffic_light(config: BridgeConfig) -> TrafficLight:
         logger.error("Could not initialize Cleware hardware: %s", exc)
         raise SystemExit(1) from exc
 
-    logger.error(
-        "No Cleware device found. Set LIGHT_BACKEND=mock to run without hardware."
-    )
+    logger.error("No Cleware device found. Set LIGHT_BACKEND=mock to run without hardware.")
     raise SystemExit(1)
 
 
