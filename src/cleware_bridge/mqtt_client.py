@@ -210,10 +210,15 @@ class MQTTBridge:
             return
 
         self._cancel_animation()
+        # Snapshot the device state to restore when a finite animation ends
+        # on its own. A cancelled (interrupted) animation never restores — the
+        # interrupting command owns the new state (ADR 013).
+        with self._hw_lock:
+            previous_state = frozenset(self._active_leds)
         stop_event = threading.Event()
         thread = threading.Thread(
             target=self._run_animation,
-            args=(name, params, stop_event),
+            args=(name, params, previous_state, stop_event),
             daemon=True,
             name=f"anim-{name}",
         )
@@ -237,12 +242,26 @@ class MQTTBridge:
         self._anim_thread = None
         self._anim_stop = None
 
-    def _run_animation(self, name: str, params: AnimParams, stop: threading.Event) -> None:
+    def _run_animation(
+        self,
+        name: str,
+        params: AnimParams,
+        previous_state: frozenset[Color],
+        stop: threading.Event,
+    ) -> None:
         """Run an animation on a worker thread until cancelled or complete.
 
         Each step renders a frame under :attr:`_hw_lock`, then sleeps for
         ``params.speed_ms`` via ``stop.wait`` so a cancellation wakes the
         worker immediately. A hardware error mid-frame aborts the animation.
+
+        On natural completion of a finite animation (``repeats > 0`` reaching
+        its count) the worker restores ``previous_state`` — the device state
+        captured before the animation started — so a finite animation acts as
+        a transient overlay. If the animation is cancelled (``stop`` set by
+        an interrupting command) or aborts on a hardware error, the prior
+        state is **not** restored; the interrupting command owns the new
+        state. Infinite animations never complete on their own.
         """
         try:
             cycles = animation_frames(name, params)
@@ -263,6 +282,22 @@ class MQTTBridge:
                     if stop.wait(params.speed_ms / 1000.0):
                         return
                 cycle_count += 1
+            # Natural completion: restore the snapshot taken before the
+            # animation started. Re-check ``stop`` under the lock so an
+            # interrupting command that set it while we waited above wins,
+            # and we never clobber a state a newer command has applied.
+            with self._hw_lock:
+                if stop.is_set():
+                    return
+                try:
+                    self._render_frame(previous_state)
+                    logger.info(
+                        "Animation %r completed; restored previous state: %s",
+                        name,
+                        {c.to_name() for c in previous_state},
+                    )
+                except Exception as exc:
+                    logger.error("Animation %r completed but restore failed: %s", name, exc)
         except Exception as exc:
             logger.error("Animation %r crashed: %s", name, exc)
 

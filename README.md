@@ -128,6 +128,13 @@ new animation — cancels the running animation. There is no explicit stop
 topic. Animations are fire-and-forget: the bridge does not publish animation
 status, and `pattern/anim/*` messages must not be retained.
 
+When a finite animation (`repeats > 0`) finishes on its own, the device is
+restored to the state it had just before the animation started — a finite
+animation is a transient overlay. If the animation is cancelled by another
+command instead, the prior state is **not** restored; the interrupting
+command's state takes over. Infinite animations (`repeats = 0`) never finish
+on their own and therefore never restore.
+
 Unknown animation names and invalid JSON payloads are logged and ignored, and
 leave any running animation untouched.
 
