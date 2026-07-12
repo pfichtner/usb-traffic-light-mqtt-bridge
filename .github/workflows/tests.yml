@@ -43,7 +43,12 @@ jobs:
             --cov-report=xml \
             --cov-report=term-missing \
             -v
-      - name: Upload coverage
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+      - name: Upload coverage artifact
         uses: actions/upload-artifact@v7
         with:
           name: coverage-unit
