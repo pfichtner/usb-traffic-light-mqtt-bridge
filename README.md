@@ -123,16 +123,25 @@ selects one of three built-in animations:
 The payload is an optional JSON object. Every field is optional; an empty
 payload uses the defaults (blink all colors, infinite, 500 ms steps).
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `speed_ms` | integer | `500` | Milliseconds between steps. Values below `100` are clamped to `100`. |
-| `repeats` | integer | `0` | Number of complete cycles. `0` means infinite — runs until cancelled. |
-| `colors` | array of strings | all colors | Ordered list of color names to animate. Order matters for `chase` and `bounce`. |
+| Field | Type | Default | Range / Constraint | Description |
+|---|---|---|---|---|
+| `speed_ms` | integer | `500` | `>= 100` (clamped; a lower value logs a warning) | Milliseconds between animation steps. |
+| `repeats` | integer | `0` | `>= 0` | Number of complete cycles. `0` means infinite — the animation runs until cancelled by another command. |
+| `colors` | array of strings | all colors `["red","yellow","green"]` | subset of the color names; duplicates are collapsed | Ordered list of color names to animate. Order matters for `chase` and `bounce`; for `blink` it only selects which LEDs toggle. |
+
+Field validation is non-fatal and matches the "invalid commands no-op" policy:
+an empty `colors` array, a non-integer `speed_ms`/`repeats`, or an unknown
+color name causes the whole payload to be rejected (any running animation is
+left untouched). Unknown object fields are **ignored** for forward
+compatibility. A `bool` is not accepted where an integer is expected.
 
 Any subsequent command — a per-color message, a static `pattern` publish, or a
 new animation — cancels the running animation. There is no explicit stop
 topic. Animations are fire-and-forget: the bridge does not publish animation
 status, and `pattern/anim/*` messages must not be retained.
+
+The first animation frame renders immediately on publish; subsequent frames
+are spaced `speed_ms` apart.
 
 When a finite animation (`repeats > 0`) finishes on its own, the device is
 restored to the state it had just before the animation started — a finite
@@ -142,7 +151,9 @@ command's state takes over. Infinite animations (`repeats = 0`) never finish
 on their own and therefore never restore.
 
 Unknown animation names and invalid JSON payloads are logged and ignored, and
-leave any running animation untouched.
+leave any running animation untouched. If a hardware error occurs mid-step,
+the animation aborts immediately, the error is logged, and the device is left
+in whatever state the failed step reached.
 
 ### Examples
 
