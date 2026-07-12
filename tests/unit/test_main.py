@@ -97,3 +97,37 @@ class TestMainFunction:
                 main_mod.main()
 
         assert exc_info.value.code == 0
+
+    def test_main_keyboard_interrupt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIGHT_BACKEND", "mock")
+        monkeypatch.setenv("MQTT_HOST", "localhost")
+        monkeypatch.setenv("MQTT_PORT", "11883")
+
+        with patch("cleware_bridge.main.MQTTBridge") as mock_bridge_cls:
+            mock_bridge = MagicMock()
+            mock_bridge.start.side_effect = KeyboardInterrupt()
+            mock_bridge_cls.return_value = mock_bridge
+
+            from cleware_bridge import main as main_mod
+
+            main_mod.main()
+
+            mock_bridge.stop.assert_called_once()
+
+    def test_main_finally_block_executes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIGHT_BACKEND", "mock")
+        monkeypatch.setenv("MQTT_HOST", "localhost")
+        monkeypatch.setenv("MQTT_PORT", "11883")
+
+        with patch("cleware_bridge.main.MQTTBridge") as mock_bridge_cls:
+            mock_bridge = MagicMock()
+            mock_light = MagicMock()
+            mock_bridge_cls.return_value = mock_bridge
+
+            from cleware_bridge import main as main_mod
+
+            with patch("cleware_bridge.main._create_traffic_light", return_value=mock_light):
+                main_mod.main()
+
+            mock_bridge.stop.assert_called_once()
+            mock_light.close.assert_called_once()

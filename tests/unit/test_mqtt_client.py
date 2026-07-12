@@ -564,6 +564,13 @@ class TestMQTTBridgeCallbacks:
         bridge._on_connect(bridge._client, None, {}, reason_code, None)
         assert bridge._client.subscribe.call_count == 1
 
+    def test_on_connect_success_logs_and_subscribes(self) -> None:
+        bridge = self._make_bridge()
+        reason_code = MagicMock()
+        reason_code.is_failure = False
+        bridge._on_connect(bridge._client, None, {}, reason_code, None)
+        bridge._client.subscribe.assert_called_once_with("cleware/ampel/#", qos=1)
+
     def test_on_connect_failure(self) -> None:
         bridge = self._make_bridge()
         reason_code = MagicMock()
@@ -650,3 +657,55 @@ class TestMQTTBridgeActiveLeds:
         msg.payload = b"0"
         bridge._on_message(None, None, msg)
         assert bridge._active_leds == set()
+
+
+class TestMQTTBridgeRenderFrame:
+    def test_render_frame_updates_active_leds(self) -> None:
+        light = MockTrafficLight()
+        config = BridgeConfig()
+        bridge = MQTTBridge(config, light)
+        frame = frozenset({Color.RED, Color.GREEN})
+        bridge._render_frame(frame)
+        assert bridge._active_leds == {Color.RED, Color.GREEN}
+
+    def test_render_frame_hardware_error_partial_state(self) -> None:
+        light = MockTrafficLight()
+        config = BridgeConfig()
+        bridge = MQTTBridge(config, light)
+        light.set_led(Color.RED, LEDState.ON)
+        bridge._active_leds = {Color.RED}
+        light.set_disconnected()
+        frame = frozenset({Color.GREEN})
+        with pytest.raises(ConnectionError):
+            bridge._render_frame(frame)
+        assert bridge._active_leds == {Color.RED}
+
+
+class TestMQTTBridgeAnimationCleanup:
+    def _make_bridge(self) -> MQTTBridge:
+        light = MockTrafficLight()
+        config = BridgeConfig()
+        bridge = MQTTBridge(config, light)
+        return bridge
+
+    def test_cancel_animation_no_animation_running(self) -> None:
+        bridge = self._make_bridge()
+        bridge._cancel_animation()
+        assert bridge._anim_thread is None
+        assert bridge._anim_stop is None
+
+    def test_cancel_animation_with_dead_thread(self) -> None:
+        bridge = self._make_bridge()
+        import threading
+
+        def dummy() -> None:
+            pass
+
+        thread = threading.Thread(target=dummy)
+        thread.start()
+        thread.join()
+        bridge._anim_thread = thread
+        bridge._anim_stop = threading.Event()
+        bridge._cancel_animation()
+        assert bridge._anim_thread is None
+        assert bridge._anim_stop is None

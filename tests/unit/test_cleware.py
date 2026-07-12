@@ -214,3 +214,62 @@ class TestClewareBuildSwitchPayload:
         payload = cleware_mod.ClewareTrafficLight._build_switch_payload(Color.YELLOW, LEDState.ON)
         assert len(payload) == 5
         assert payload[0] == 11
+
+
+class TestClewareReconnectThrottle:
+    def test_try_reconnect_throttle_respects_timing(self) -> None:
+        mock_dev = MagicMock()
+        mock_dev.idProduct = cleware_mod.ClewareTrafficLight.PRODUCT_ORIGINAL
+        mock_dev.is_kernel_driver_active.return_value = False
+
+        with patch.object(cleware_mod.usb.core, "find", return_value=mock_dev):
+            light = cleware_mod.ClewareTrafficLight()
+            light._connected = False
+            light._last_attempt = time.monotonic()
+            light._try_reconnect()
+            assert mock_dev.write.call_count == 0
+
+    def test_try_reconnect_after_timeout(self) -> None:
+        mock_dev = MagicMock()
+        mock_dev.idProduct = cleware_mod.ClewareTrafficLight.PRODUCT_ORIGINAL
+        mock_dev.is_kernel_driver_active.return_value = False
+
+        with patch.object(cleware_mod.usb.core, "find", return_value=mock_dev):
+            light = cleware_mod.ClewareTrafficLight()
+            light._connected = False
+            light._last_attempt = time.monotonic() - 6.0
+            light._try_reconnect()
+            assert light._last_attempt > time.monotonic() - 1.0
+
+
+class TestClewareSetColorPartialFailure:
+    def test_set_color_logs_warning_on_turn_off_failure(self) -> None:
+        mock_dev = MagicMock()
+        mock_dev.idProduct = cleware_mod.ClewareTrafficLight.PRODUCT_ORIGINAL
+        mock_dev.is_kernel_driver_active.return_value = False
+        call_count = [0]
+
+        def write_side_effect(endpoint, payload, timeout=1000):
+            call_count[0] += 1
+            if call_count[0] > 1:
+                raise usb.core.USBError("USB error")
+
+        mock_dev.write.side_effect = write_side_effect
+
+        with patch.object(cleware_mod.usb.core, "find", return_value=mock_dev):
+            light = cleware_mod.ClewareTrafficLight()
+            light.set_color(Color.RED)
+            assert mock_dev.write.call_count >= 2
+
+
+class TestClewareUnknownProductId:
+    def test_send_command_unknown_product_id(self) -> None:
+        mock_dev = MagicMock()
+        mock_dev.idProduct = 0x9999
+        mock_dev.is_kernel_driver_active.return_value = False
+
+        with patch.object(cleware_mod.usb.core, "find", return_value=mock_dev):
+            light = cleware_mod.ClewareTrafficLight()
+            light._connected = True
+            with pytest.raises(ValueError, match="Unknown product ID"):
+                light.set_led(Color.RED, LEDState.ON)
