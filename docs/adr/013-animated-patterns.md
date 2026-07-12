@@ -113,10 +113,21 @@ not a general reversal of ADR 008.
   running animation **before** the new command is processed. There is
   no explicit stop topic; the "any command cancels" rule is sufficient.
 - **Completion**: When `repeats > 0` and the count is reached, the
-  animation stops and the LEDs remain in the last step's state. The
-  internal `_active_leds` set is set to that last frame.
+  animation stops and the device is **restored to the state it had just
+  before the animation started**. The internal `_active_leds` set is set
+  to that saved snapshot, so a finite animation acts as a transient
+  overlay: once it is over, the traffic light returns to what it was
+  showing. A snapshot of `_active_leds` is taken under `_hw_lock` when
+  the animation is dispatched, before its first frame renders.
+- **Cancellation vs. completion**: A cancelled (interrupted) animation
+  **never** restores the prior state — the interrupting command owns the
+  new state. Only natural completion of a finite animation restores.
+  The worker re-checks the stop event under `_hw_lock` before restoring,
+  so an interrupt that arrives at the moment of completion still wins
+  and the restore is skipped.
 - **Infinite animations**: `repeats = 0` (and the default) run until
-  cancelled by another command.
+  cancelled by another command. They never complete on their own and
+  therefore never restore.
 - **Fire-and-forget**: The bridge does **not** publish animation status
   to any state topic. Clients that need to know whether an animation is
   running must track the commands they have sent. Adding a state topic
@@ -237,10 +248,12 @@ def _start_animation(self, name: str, payload: str) -> None:
         logger.warning("Invalid animation payload for %r: %r", name, payload)
         return
     self._cancel_animation()
+    with self._hw_lock:
+        previous_state = frozenset(self._active_leds)
     self._anim_stop = threading.Event()
     self._anim_thread = threading.Thread(
         target=self._run_animation,
-        args=(name, params, self._anim_stop),
+        args=(name, params, previous_state, self._anim_stop),
         daemon=True,
     )
     self._anim_thread.start()
@@ -253,12 +266,15 @@ def _cancel_animation(self) -> None:
     self._anim_stop = None
     self._anim_thread = None
 
-def _run_animation(self, name: str, params: AnimParams, stop: threading.Event) -> None:
+def _run_animation(
+    self, name: str, params: AnimParams,
+    previous_state: frozenset[Color], stop: threading.Event,
+) -> None:
     cycle = 0
     while params.infinite or cycle < params.repeats:
         for step in self._animation_steps(name, params):
             if stop.is_set():
-                return
+                return  # cancelled — do not restore
             with self._hw_lock:
                 try:
                     self._render_step(step)
@@ -266,8 +282,12 @@ def _run_animation(self, name: str, params: AnimParams, stop: threading.Event) -
                     logger.error("Animation %r aborted: %s", name, exc)
                     return
             if stop.wait(params.speed_ms):
-                return
+                return  # cancelled — do not restore
         cycle += 1
+    # Natural completion of a finite animation: restore the snapshot.
+    with self._hw_lock:
+        if not stop.is_set():
+            self._render_step(previous_state)
 ```
 
 `_animation_steps` is an iterator yielding `frozenset[Color]` frames per

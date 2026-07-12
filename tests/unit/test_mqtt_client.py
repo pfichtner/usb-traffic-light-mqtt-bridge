@@ -393,18 +393,29 @@ class TestMQTTBridgeAnimTopic:
         assert thread is not None
         thread.join(timeout=3.0)
         assert not thread.is_alive()
-        # blink cycle is [all_on, all_off]; after one repeat LEDs are off.
+        # Prior state was empty, so the restored state is off.
         assert bridge._light.active_colors == set()
+        assert bridge._active_leds == set()
 
-    def test_chase_finite_last_frame(self) -> None:
+    def test_chase_finite_restores_previous_state(self) -> None:
+        # Set a known prior state, then run a finite chase. On natural
+        # completion the device is restored to that prior state (ADR 013).
         bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/red", "1")
+        self._send(bridge, "cleware/ampel/green", "1")
+        assert bridge._active_leds == {Color.RED, Color.GREEN}
         self._send(
             bridge,
             "cleware/ampel/pattern/anim/chase",
             '{"repeats":1,"speed_ms":100,"colors":["red","green"]}',
         )
         self._wait_anim_done(bridge)
-        assert bridge._light.active_colors == {Color.GREEN}
+        assert bridge._light.active_colors == {Color.RED, Color.GREEN}
+        assert bridge._active_leds == {Color.RED, Color.GREEN}
+        # Natural completion leaves the (now-dead) thread reference behind;
+        # the next command's _cancel_animation clears it.
+        assert bridge._anim_thread is not None
+        assert not bridge._anim_thread.is_alive()
 
     def test_per_color_cancels_animation(self) -> None:
         bridge = self._make_bridge()
@@ -415,6 +426,20 @@ class TestMQTTBridgeAnimTopic:
         assert bridge._anim_thread is None
         assert Color.RED in bridge._light.active_colors
         assert Color.RED in bridge._active_leds
+
+    def test_cancelled_animation_does_not_restore_prior_state(self) -> None:
+        # Prior state is {red}. Start an infinite blink, then interrupt it with
+        # a static pattern. The interrupting command's state wins; the prior
+        # {red} state must NOT be restored (ADR 013 cancellation semantics).
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/red", "1")
+        assert bridge._active_leds == {Color.RED}
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", '{"speed_ms":100}')
+        assert bridge._anim_thread is not None
+        self._send(bridge, "cleware/ampel/pattern", "green")
+        assert bridge._anim_thread is None
+        assert bridge._light.active_colors == {Color.GREEN}
+        assert bridge._active_leds == {Color.GREEN}
 
     def test_pattern_cancels_animation(self) -> None:
         bridge = self._make_bridge()
@@ -450,13 +475,16 @@ class TestMQTTBridgeAnimTopic:
 
     def test_anim_custom_prefix(self) -> None:
         bridge = self._make_bridge(prefix="custom/ampel/")
+        # A finite animation under a custom prefix also restores prior state.
+        self._send(bridge, "custom/ampel/yellow", "1")
         self._send(
             bridge,
             "custom/ampel/pattern/anim/chase",
             '{"repeats":1,"speed_ms":100,"colors":["red"]}',
         )
         self._wait_anim_done(bridge)
-        assert bridge._light.active_colors == {Color.RED}
+        assert bridge._light.active_colors == {Color.YELLOW}
+        assert bridge._active_leds == {Color.YELLOW}
 
     def test_hardware_error_aborts_animation(self) -> None:
         bridge = self._make_bridge()
