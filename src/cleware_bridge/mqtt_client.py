@@ -37,6 +37,13 @@ class MQTTBridge:
         self._hw_lock: threading.Lock = threading.Lock()
         self._anim_thread: threading.Thread | None = None
         self._anim_stop: threading.Event | None = None
+        # The "base" device state captured before the *current* animation chain
+        # began. A finite animation restores this on natural completion. When a
+        # new animation interrupts a running one, the interrupting animation
+        # adopts this same base instead of snapshotting the mid-animation frame
+        # it overwrote, so a chain of animations always restores the state that
+        # existed before the first animation started (ADR 013).
+        self._anim_base_state: frozenset[Color] = frozenset()
 
         client_id = os.environ.get("MQTT_CLIENT_ID", "")
         if not client_id:
@@ -209,12 +216,21 @@ class MQTTBridge:
             logger.warning("Invalid animation payload for %r: %r", name, payload)
             return
 
+        # If we are interrupting a running animation, the new animation must
+        # restore the *same* base state the interrupted one would have — i.e.
+        # the device state before the animation chain began — rather than the
+        # mid-animation frame we are about to overwrite. Snapshotting the live
+        # LEDs would otherwise capture the previous animation's transient
+        # frame as the restore target (bug). A non-animated device simply
+        # snapshots its current LED state (ADR 013).
+        interrupting = self._anim_thread is not None and self._anim_thread.is_alive()
+        if interrupting:
+            previous_state = self._anim_base_state
+        else:
+            with self._hw_lock:
+                previous_state = frozenset(self._active_leds)
         self._cancel_animation()
-        # Snapshot the device state to restore when a finite animation ends
-        # on its own. A cancelled (interrupted) animation never restores — the
-        # interrupting command owns the new state (ADR 013).
-        with self._hw_lock:
-            previous_state = frozenset(self._active_leds)
+        self._anim_base_state = previous_state
         stop_event = threading.Event()
         thread = threading.Thread(
             target=self._run_animation,

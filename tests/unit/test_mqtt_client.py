@@ -468,6 +468,54 @@ class TestMQTTBridgeAnimTopic:
         self._send(bridge, "cleware/ampel/pattern", "all_off")
         assert bridge._anim_thread is None
 
+    def _wait_until_active(
+        self, bridge: MQTTBridge, expected: set[Color], timeout: float = 3.0
+    ) -> None:
+        """Poll until the tracked active LEDs match ``expected`` or time out."""
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if bridge._active_leds == expected:
+                return
+            time.sleep(0.005)
+        assert bridge._active_leds == expected
+
+    def test_interrupted_anim_keep_original_base_state_for_restore(self) -> None:
+        # Regression: when animation #2 interrupts animation #1, animation #2
+        # must snapshot the *base* state that existed before animation #1 began
+        # (here: all LEDs off), not the mid-animation frame animation #1 had
+        # rendered when it was interrupted. Otherwise restoring on natural
+        # completion of animation #2 brings back animation #1's transient
+        # frame instead of the original device state.
+        bridge = self._make_bridge()
+        assert bridge._active_leds == set()
+        # Animation #1: infinite blink of the green LED only. Its first frame
+        # is {green}; we wait until that frame is rendered before interrupting
+        # so the mid-animation state we interrupt is deterministically {green}.
+        self._send(
+            bridge,
+            "cleware/ampel/pattern/anim/blink",
+            '{"speed_ms":1000,"colors":["green"]}',
+        )
+        self._wait_until_active(bridge, {Color.GREEN})
+        # Snapshot what animation #1 had rendered — this is the buggy restore
+        # target we must NOT end up with.
+        assert bridge._active_leds == {Color.GREEN}
+        # Animation #2: a finite chase that interrupts animation #1. On natural
+        # completion it should restore the base state (all off), not {green}.
+        self._send(
+            bridge,
+            "cleware/ampel/pattern/anim/chase",
+            '{"repeats":1,"speed_ms":100,"colors":["red"]}',
+        )
+        self._wait_anim_done(bridge)
+        assert bridge._anim_thread is not None
+        assert not bridge._anim_thread.is_alive()
+        # The base state before animation #1 was all off; that must be restored.
+        assert bridge._light.active_colors == set()
+        assert bridge._active_leds == set()
+
     def test_invalid_payload_before_valid_anim_no_cancel_branch(self) -> None:
         # An invalid anim payload neither cancels a running anim nor starts one.
         bridge = self._make_bridge()

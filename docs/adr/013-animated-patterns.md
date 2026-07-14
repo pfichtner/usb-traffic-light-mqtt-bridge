@@ -117,14 +117,27 @@ not a general reversal of ADR 008.
   before the animation started**. The internal `_active_leds` set is set
   to that saved snapshot, so a finite animation acts as a transient
   overlay: once it is over, the traffic light returns to what it was
-  showing. A snapshot of `_active_leds` is taken under `_hw_lock` when
-  the animation is dispatched, before its first frame renders.
+  showing. The bridge records the base state in `_anim_base_state`; when
+  no animation is running this is a snapshot of `_active_leds` taken
+  under `_hw_lock` at dispatch time, before the first frame renders.
 - **Cancellation vs. completion**: A cancelled (interrupted) animation
   **never** restores the prior state — the interrupting command owns the
   new state. Only natural completion of a finite animation restores.
   The worker re-checks the stop event under `_hw_lock` before restoring,
   so an interrupt that arrives at the moment of completion still wins
   and the restore is skipped.
+- **Interrupted animation chains**: When a new animation interrupts a
+  running one, the interrupting animation must restore the **same base
+  state** the interrupted animation would have — i.e. the device state
+  that existed before the *first* animation in the chain began — rather
+  than the mid-animation frame it is overwriting. The dispatcher
+  therefore snapshots the live LEDs only when no animation is running;
+  when interrupting, it reuses the running animation's `_anim_base_state`
+  as its own restore target. Without this, a finite animation that
+  interrupts another would restore the interrupted animation's transient
+  frame instead of the original device state (bug fix: the base state
+  must be carried across an interrupted chain so consecutive animations
+  act as a single transient overlay over the pre-chain state).
 - **Infinite animations**: `repeats = 0` (and the default) run until
   cancelled by another command. They never complete on their own and
   therefore never restore.
