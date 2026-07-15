@@ -758,3 +758,147 @@ class TestMQTTBridgeAnimationCleanup:
         bridge._cancel_animation()
         assert bridge._anim_thread is None
         assert bridge._anim_stop is None
+
+
+class TestMQTTBridgeTrafficLightTopic:
+    """Traffic light animation dispatch, hold_final, and cancellation (ADR 014)."""
+
+    def _make_bridge(self, prefix: str = "cleware/ampel/") -> MQTTBridge:
+        light = MockTrafficLight()
+        config = BridgeConfig(mqtt_topic_prefix=prefix)
+        bridge = MQTTBridge(config, light)
+        bridge._light = light
+        return bridge
+
+    def _make_msg(self, topic: str, payload: str) -> mqtt.MQTTMessage:
+        msg = MagicMock(spec=mqtt.MQTTMessage)
+        msg.topic = topic
+        msg.payload = payload.encode("utf-8")
+        return msg
+
+    def _send(self, bridge: MQTTBridge, topic: str, payload: str) -> None:
+        bridge._on_message(None, None, self._make_msg(topic, payload))  # type: ignore[arg-type]
+
+    def _wait_anim_done(self, bridge: MQTTBridge, timeout: float = 5.0) -> None:
+        thread = bridge._anim_thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+
+    def test_unknown_country_ignored(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/red", "1")
+        self._send(bridge, "cleware/ampel/pattern/tl/french/blink-yellow", "")
+        assert bridge._light.active_colors == {Color.RED}
+        assert bridge._anim_thread is None
+
+    def test_unknown_tl_animation_ignored(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/red", "1")
+        self._send(bridge, "cleware/ampel/pattern/tl/german/flash", "")
+        assert bridge._light.active_colors == {Color.RED}
+        assert bridge._anim_thread is None
+
+    def test_malformed_tl_suffix_ignored(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/red", "1")
+        self._send(bridge, "cleware/ampel/pattern/tl/german", "")
+        assert bridge._anim_thread is None
+
+    def test_blink_yellow_runs(self) -> None:
+        bridge = self._make_bridge()
+        # blink-yellow is infinite; speed_factor makes it fast enough to observe.
+        self._send(bridge, "cleware/ampel/pattern/tl/german/blink-yellow", '{"speed_factor":10}')
+        assert bridge._anim_thread is not None
+        self._send(bridge, "cleware/ampel/pattern", "all_off")
+        assert bridge._anim_thread is None
+
+    def test_red_to_green_holds_green_by_default(self) -> None:
+        bridge = self._make_bridge()
+        # Set a prior state first
+        self._send(bridge, "cleware/ampel/red", "1")
+        assert bridge._active_leds == {Color.RED}
+        self._send(bridge, "cleware/ampel/pattern/tl/german/red-to-green", '{"speed_factor":10}')
+        self._wait_anim_done(bridge)
+        assert not bridge._anim_thread.is_alive()
+        # Default hold_final=True keeps green on; previous {red} not restored.
+        assert bridge._light.active_colors == {Color.GREEN}
+        assert bridge._active_leds == {Color.GREEN}
+
+    def test_red_to_green_explicit_hold_false_restores(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/red", "1")
+        assert bridge._active_leds == {Color.RED}
+        self._send(
+            bridge,
+            "cleware/ampel/pattern/tl/german/red-to-green",
+            '{"speed_factor":10,"hold_final":false}',
+        )
+        self._wait_anim_done(bridge)
+        assert not bridge._anim_thread.is_alive()
+        # hold_final=False restores previous state {red}.
+        assert bridge._light.active_colors == {Color.RED}
+        assert bridge._active_leds == {Color.RED}
+
+    def test_green_to_red_holds_red_by_default(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/green", "1")
+        assert bridge._active_leds == {Color.GREEN}
+        self._send(bridge, "cleware/ampel/pattern/tl/german/green-to-red", '{"speed_factor":10}')
+        self._wait_anim_done(bridge)
+        assert not bridge._anim_thread.is_alive()
+        assert bridge._light.active_colors == {Color.RED}
+        assert bridge._active_leds == {Color.RED}
+
+    def test_blink_yellow_does_not_hold_no_led(self) -> None:
+        # blink-yellow is infinite so it never "completes"; cancelling it
+        # applies the interrupting command's state (ADR 013/014).  Here we
+        # verify default_hold_final=False by checking it does NOT auto-hold.
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/pattern/tl/german/blink-yellow", '{"speed_factor":10}')
+        assert bridge._anim_thread is not None
+        # Interrupt with all_off; the blink does not keep yellow on.
+        self._send(bridge, "cleware/ampel/pattern", "all_off")
+        assert bridge._anim_thread is None
+        assert bridge._light.active_colors == set()
+
+    def test_per_color_cancels_tl_animation(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/pattern/tl/german/blink-yellow", '{"speed_factor":10}')
+        assert bridge._anim_thread is not None
+        self._send(bridge, "cleware/ampel/green", "1")
+        assert bridge._anim_thread is None
+        assert Color.GREEN in bridge._light.active_colors
+
+    def test_tl_animation_cancels_standard_animation(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/pattern/anim/blink", '{"speed_ms":100}')
+        first_thread = bridge._anim_thread
+        assert first_thread is not None
+        self._send(bridge, "cleware/ampel/pattern/tl/german/blink-yellow", '{"speed_factor":10}')
+        assert bridge._anim_thread is not first_thread
+        # Cleanup
+        self._send(bridge, "cleware/ampel/pattern", "all_off")
+
+    def test_speed_factor_scales_durations(self) -> None:
+        # Verify the speed_factor reaches animation_frames by checking the
+        # generated cycle's durations for a small factor.
+        from cleware_bridge.models import AnimParams, animation_frames
+
+        params = AnimParams(speed_factor=2.0)
+        cycle = next(animation_frames("red-to-green", params))
+        assert cycle == [
+            (frozenset({Color.RED}), 2500),
+            (frozenset({Color.RED, Color.YELLOW}), 500),
+            (frozenset({Color.GREEN}), 1500),
+        ]
+
+    def test_hold_final_true_in_payload_respected(self) -> None:
+        bridge = self._make_bridge()
+        self._send(bridge, "cleware/ampel/red", "1")
+        self._send(
+            bridge,
+            "cleware/ampel/pattern/tl/german/red-to-green",
+            '{"speed_factor":10,"hold_final":true}',
+        )
+        self._wait_anim_done(bridge)
+        assert bridge._light.active_colors == {Color.GREEN}

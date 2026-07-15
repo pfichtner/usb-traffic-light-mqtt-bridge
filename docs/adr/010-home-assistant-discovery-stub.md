@@ -49,6 +49,19 @@ When HA Discovery is implemented:
 2. `remove_config()` removes the configuration
 3. State updates are sent automatically via the existing state publication
 
+Entities to expose once implemented:
+
+- One `light` or `switch` entity per color topic (`{prefix}/red|yellow|green`).
+- `select` entities for static patterns (`{prefix}/pattern`).
+- `select` entities for each built-in animation (`{prefix}/pattern/anim/<name>`),
+  mapping `speed_ms`, `repeats`, and `colors` to UI controls (ADR 013).
+- `select` entities for each traffic light animation
+  (`{prefix}/pattern/tl/<country>/<name>`), mapping `speed_factor` and
+  `hold_final` to UI controls (ADR 014). The animation catalog (and any
+  future country additions) is data-driven via `TL_TIMINGS`, so a future
+  implementation should enumerate the catalog rather than hard-code entity
+  names, ensuring new countries appear without discovery-code changes.
+
 ## Alternatives considered
 
 - **Direct implementation**: Too early, requirements are still unclear

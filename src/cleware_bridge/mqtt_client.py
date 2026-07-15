@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -12,6 +13,8 @@ from .models import (
     ANIM_TOPIC_PREFIX,
     ANIMATIONS,
     PATTERN_TOPIC_SUFFIX,
+    TL_TIMINGS,
+    TL_TOPIC_PREFIX,
     TOPIC_COLOR_MAP,
     AnimParams,
     Color,
@@ -23,6 +26,22 @@ from .models import (
 from .traffic_light import TrafficLight
 
 logger = logging.getLogger(__name__)
+
+
+def _payload_has_key(payload: str, key: str) -> bool:
+    """Return True if the JSON object in *payload* contains *key*.
+
+    Returns False on empty, non-JSON, or non-object payloads so callers can
+    distinguish "user did not specify the key" from an explicit value.
+    """
+    text = payload.strip()
+    if not text:
+        return False
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(data, dict) and key in data
 
 
 class MQTTBridge:
@@ -135,6 +154,11 @@ class MQTTBridge:
             self._start_animation(anim_name, payload_str)
             return
 
+        if suffix.startswith(TL_TOPIC_PREFIX):
+            tl_suffix = suffix[len(TL_TOPIC_PREFIX) :]
+            self._start_tl_animation(tl_suffix, payload_str)
+            return
+
         if suffix not in TOPIC_COLOR_MAP:
             return
 
@@ -215,7 +239,60 @@ class MQTTBridge:
         if params is None:
             logger.warning("Invalid animation payload for %r: %r", name, payload)
             return
+        self._launch_animation(name, params)
 
+    def _start_tl_animation(self, tl_suffix: str, payload: str) -> None:
+        """Dispatch a traffic light animation command (ADR 014).
+
+        ``tl_suffix`` is the part after ``pattern/tl/``, of the form
+        ``<country>/<animation>``.  Unknown countries or animation names are
+        rejected with a warning; otherwise the JSON payload is parsed (with
+        traffic-light-specific defaults applied) and the animation is
+        launched via :meth:`_launch_animation`.
+        """
+        parts = tl_suffix.split("/", 1)
+        if len(parts) != 2 or not all(parts):
+            logger.warning("Invalid traffic light topic suffix: %r", tl_suffix)
+            return
+        country, anim_name = parts[0], parts[1]
+        if country not in TL_TIMINGS or anim_name not in TL_TIMINGS[country]:
+            logger.warning("Unknown traffic light animation: %r/%r", country, anim_name)
+            return
+
+        holds_final = _payload_has_key(payload, "hold_final")
+        specifies_repeats = _payload_has_key(payload, "repeats")
+        params = parse_anim_params(anim_name, payload)
+        if params is None:
+            logger.warning(
+                "Invalid payload for traffic light %r/%r: %r",
+                country,
+                anim_name,
+                payload,
+            )
+            return
+
+        timings = TL_TIMINGS[country][anim_name]
+
+        # Traffic light animations have fixed colors and per-phase durations;
+        # speed_ms and colors from params are meaningless here.  Apply the
+        # animation-specific defaults for hold_final and repeats when not
+        # explicitly set in the payload (ADR 014).
+        hold_final = params.hold_final if holds_final else timings.default_hold_final
+        repeats = params.repeats if specifies_repeats else timings.default_repeats
+        params = AnimParams(
+            hold_final=hold_final,
+            speed_factor=params.speed_factor,
+            repeats=repeats,
+        )
+        self._launch_animation(anim_name, params)
+
+    def _launch_animation(self, name: str, params: AnimParams) -> None:
+        """Validate-independent launch: cancel running anim and start worker.
+
+        Shared by :meth:`_start_animation` (ADR 013) and
+        :meth:`_start_tl_animation` (ADR 014).  ``name`` and ``params`` must
+        already be validated by the caller.
+        """
         # If we are interrupting a running animation, the new animation must
         # restore the *same* base state the interrupted one would have — i.e.
         # the device state before the animation chain began — rather than the
@@ -267,26 +344,32 @@ class MQTTBridge:
     ) -> None:
         """Run an animation on a worker thread until cancelled or complete.
 
-        Each step renders a frame under :attr:`_hw_lock`, then sleeps for
-        ``params.speed_ms`` via ``stop.wait`` so a cancellation wakes the
-        worker immediately. A hardware error mid-frame aborts the animation.
+        Each step renders a frame under :attr:`_hw_lock`, then sleeps for the
+        frame's own duration (in ms) via ``stop.wait`` so a cancellation wakes
+        the worker immediately.  A hardware error mid-frame aborts the
+        animation.
 
-        On natural completion of a finite animation (``repeats > 0`` reaching
-        its count) the worker restores ``previous_state`` — the device state
-        captured before the animation started — so a finite animation acts as
-        a transient overlay. If the animation is cancelled (``stop`` set by
-        an interrupting command) or aborts on a hardware error, the prior
-        state is **not** restored; the interrupting command owns the new
-        state. Infinite animations never complete on their own.
+        On natural completion of a finite animation (``repeats > 0``
+        reaching its count) the worker restores ``previous_state`` — the
+        device state captured before the animation started — so a finite
+        animation acts as a transient overlay.  If ``params.hold_final`` is
+        True, the last rendered frame's LED state is kept instead of
+        restoring ``previous_state`` (ADR 014).
+
+        If the animation is cancelled (``stop`` set by an interrupting
+        command) or aborts on a hardware error, the prior state is **not**
+        restored; the interrupting command owns the new state. Infinite
+        animations never complete on their own.
         """
         try:
             cycles = animation_frames(name, params)
             cycle_count = 0
+            last_frame: frozenset[Color] = previous_state
             while params.infinite or cycle_count < params.repeats:
                 cycle = next(cycles, None)
                 if cycle is None:
                     break
-                for frame in cycle:
+                for frame, duration_ms in cycle:
                     if stop.is_set():
                         return
                     with self._hw_lock:
@@ -295,15 +378,25 @@ class MQTTBridge:
                         except Exception as exc:
                             logger.error("Animation %r aborted: %s", name, exc)
                             return
-                    if stop.wait(params.speed_ms / 1000.0):
+                    last_frame = frame
+                    if stop.wait(duration_ms / 1000.0):
                         return
                 cycle_count += 1
-            # Natural completion: restore the snapshot taken before the
-            # animation started. Re-check ``stop`` under the lock so an
+            # Natural completion.  Re-check ``stop`` under the lock so an
             # interrupting command that set it while we waited above wins,
             # and we never clobber a state a newer command has applied.
             with self._hw_lock:
                 if stop.is_set():
+                    return
+                if params.hold_final:
+                    # Keep the last rendered frame; no hardware change needed
+                    # since the LEDs already show it. Just ensure tracked
+                    # state is in sync (it already is via _render_frame).
+                    logger.info(
+                        "Animation %r completed; holding final state: %s",
+                        name,
+                        {c.to_name() for c in last_frame},
+                    )
                     return
                 try:
                     self._render_frame(previous_state)

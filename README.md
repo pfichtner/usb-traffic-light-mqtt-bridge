@@ -88,6 +88,7 @@ All settings via environment variables:
 | `cleware/ampel/green` | `0` or `1` | Green: 0=off, 1=on |
 | `cleware/ampel/pattern` | pattern string | Set the whole light at once (see below) |
 | `cleware/ampel/pattern/anim/<name>` | JSON object | Start an animation, e.g. `blink`, `chase`, `bounce` (see below) |
+| `cleware/ampel/pattern/tl/<country>/<name>` | JSON object | Start a traffic light animation, e.g. `german/red-to-green` (see below) |
 
 Each LED is controlled independently. Switching one LED has no effect on the others.
 Any command (per-color, `pattern`, or a new animation) cancels a running animation.
@@ -155,6 +156,43 @@ leave any running animation untouched. If a hardware error occurs mid-step,
 the animation aborts immediately, the error is logged, and the device is left
 in whatever state the failed step reached.
 
+#### Traffic light animations
+
+`cleware/ampel/pattern/tl/<country>/<name>` starts a **country-specific**
+traffic light animation that uses regulation-based timings and phases. The
+country currently supported is `german` (German StVO timings). Each animation
+has fixed colors and per-phase durations; the optional JSON payload lets you
+scale the timing and control whether the final LED state persists after a
+finite animation completes.
+
+| Animation (`german/…`) | Behavior | Default `hold_final` | Default `repeats` |
+|---|---|---|---|
+| `blink-yellow` | Blink yellow at 1 Hz (500 ms on / 500 ms off) | `false` | `0` (infinite) |
+| `red-to-green` | Red (5 s) → red+yellow (1 s) → green (3 s) | `true` | `1` (one cycle) |
+| `green-to-red` | Green (3 s) → yellow (3 s) → red (5 s) | `true` | `1` (one cycle) |
+
+The payload is an optional JSON object:
+
+| Field | Type | Default | Range / Constraint | Description |
+|---|---|---|---|---|
+| `speed_factor` | number | `1.0` | `0.1`–`10.0` | Scales all phase durations. `2.0` = twice as fast, `0.5` = half speed. Below `MIN_SPEED_MS` is clamped. |
+| `repeats` | integer | (see table above) | `>= 0` | Number of complete cycles. `0` means infinite. Overrides the animation-specific default. |
+| `hold_final` | boolean | (see table above) | — | When `true`, keep the last LED state after a finite animation completes instead of restoring the prior state. Overrides the animation-specific default. |
+
+> **`hold_final`** — by default a finite animation restores the device state
+> that existed *before* the animation started (a transient overlay). With
+> `hold_final: true`, the last LED turned on in the sequence (e.g. green for
+> `red-to-green`, red for `green-to-red`) stays on after the animation
+> completes, so the traffic light remains in the post-transition state. This
+> is useful to drive a real transition end-to-end. An explicitly cancelled
+> animation never holds the final state — the interrupting command owns the
+> new state.
+
+The `speed_ms` and `colors` fields from the generic animated-patterns payload
+are accepted but ignored by traffic light animations; durations and colors are
+fixed by the country's traffic light regulations and encoded in the animation
+data.
+
 ### Examples
 
 Turn red on:
@@ -200,15 +238,31 @@ mosquitto_pub -h localhost -t "cleware/ampel/pattern/anim/chase" \
   -m '{"speed_ms":250,"repeats":10,"colors":["red","green"]}'
 ```
 
-Bounce all LEDs, slow, infinite:
-```bash
-mosquitto_pub -h localhost -t "cleware/ampel/pattern/anim/bounce" \
-  -m '{"speed_ms":1000}'
-```
-
 Stop the running animation (any command cancels):
 ```bash
 mosquitto_pub -h localhost -t "cleware/ampel/pattern" -m "all_off"
+```
+
+Blink yellow at 1 Hz (German traffic light caution signal), infinite:
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern/tl/german/blink-yellow" -m ""
+```
+
+Red-to-green transition (hold green after completion):
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern/tl/german/red-to-green" -m ""
+```
+
+Green-to-red transition at 2× speed (hold red after completion):
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern/tl/german/green-to-red" \
+  -m '{"speed_factor":2.0}'
+```
+
+Red-to-green transition but restore the prior state on completion:
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern/tl/german/red-to-green" \
+  -m '{"hold_final":false}'
 ```
 
 ## Hardware
