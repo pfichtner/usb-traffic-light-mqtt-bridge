@@ -416,7 +416,7 @@ class TestGermanTrafficLightTimings:
         assert timings.default_hold_final is True
         assert timings.default_repeats == 1
         assert timings.phases == (
-            TrafficLightPhase(leds=frozenset({Color.RED}), duration_ms=5000),
+            TrafficLightPhase(leds=frozenset({Color.RED}), duration_ms=1000),
             TrafficLightPhase(leds=frozenset({Color.RED, Color.YELLOW}), duration_ms=1000),
             TrafficLightPhase(leds=frozenset({Color.GREEN}), duration_ms=3000),
         )
@@ -427,7 +427,7 @@ class TestGermanTrafficLightTimings:
         assert timings.default_hold_final is True
         assert timings.default_repeats == 1
         assert timings.phases == (
-            TrafficLightPhase(leds=frozenset({Color.GREEN}), duration_ms=3000),
+            TrafficLightPhase(leds=frozenset({Color.GREEN}), duration_ms=1000),
             TrafficLightPhase(leds=frozenset({Color.YELLOW}), duration_ms=3000),
             TrafficLightPhase(leds=frozenset({Color.RED}), duration_ms=5000),
         )
@@ -435,7 +435,7 @@ class TestGermanTrafficLightTimings:
 
 class TestAnimationFramesTrafficLight:
     def _params(self, speed_factor: float = 1.0) -> AnimParams:
-        return AnimParams(speed_factor=speed_factor)
+        return AnimParams(speed_factor=speed_factor, country="german")
 
     def test_blink_yellow_cycle(self) -> None:
         cycle = next(animation_frames("blink-yellow", self._params()))
@@ -447,7 +447,7 @@ class TestAnimationFramesTrafficLight:
     def test_red_to_green_cycle(self) -> None:
         cycle = next(animation_frames("red-to-green", self._params()))
         assert cycle == [
-            (frozenset({Color.RED}), 5000),
+            (frozenset({Color.RED}), 1000),
             (frozenset({Color.RED, Color.YELLOW}), 1000),
             (frozenset({Color.GREEN}), 3000),
         ]
@@ -455,7 +455,7 @@ class TestAnimationFramesTrafficLight:
     def test_green_to_red_cycle(self) -> None:
         cycle = next(animation_frames("green-to-red", self._params()))
         assert cycle == [
-            (frozenset({Color.GREEN}), 3000),
+            (frozenset({Color.GREEN}), 1000),
             (frozenset({Color.YELLOW}), 3000),
             (frozenset({Color.RED}), 5000),
         ]
@@ -463,7 +463,7 @@ class TestAnimationFramesTrafficLight:
     def test_speed_factor_2_halves_durations(self) -> None:
         cycle = next(animation_frames("red-to-green", self._params(2.0)))
         assert cycle == [
-            (frozenset({Color.RED}), 2500),
+            (frozenset({Color.RED}), 500),
             (frozenset({Color.RED, Color.YELLOW}), 500),
             (frozenset({Color.GREEN}), 1500),
         ]

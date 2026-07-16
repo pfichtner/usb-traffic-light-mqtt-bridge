@@ -159,17 +159,30 @@ in whatever state the failed step reached.
 #### Traffic light animations
 
 `cleware/ampel/pattern/tl/<country>/<name>` starts a **country-specific**
-traffic light animation that uses regulation-based timings and phases. The
-country currently supported is `german` (German StVO timings). Each animation
-has fixed colors and per-phase durations; the optional JSON payload lets you
-scale the timing and control whether the final LED state persists after a
-finite animation completes.
+traffic light animation that uses regulation-based timings and phases.
+Currently supported countries are `german` (German StVO timings),
+`uk` (UK Traffic Signs Regulations), and `usa` (US MUTCD timings). Each
+animation has fixed colors and per-phase durations; the optional JSON payload
+lets you scale the timing and control whether the final LED state persists
+after a finite animation completes.
 
 | Animation (`german/…`) | Behavior | Default `hold_final` | Default `repeats` |
 |---|---|---|---|
 | `blink-yellow` | Blink yellow at 1 Hz (500 ms on / 500 ms off) | `false` | `0` (infinite) |
 | `red-to-green` | Red (5 s) → red+yellow (1 s) → green (3 s) | `true` | `1` (one cycle) |
 | `green-to-red` | Green (3 s) → yellow (3 s) → red (5 s) | `true` | `1` (one cycle) |
+
+| Animation (`uk/…`) | Behavior | Default `hold_final` | Default `repeats` |
+|---|---|---|---|
+| `blink-yellow` | Blink yellow at 1 Hz (500 ms on / 500 ms off) | `false` | `0` (infinite) |
+| `red-to-green` | Red (1 s) → red+yellow (0.5 s) → green (3 s) | `true` | `1` (one cycle) |
+| `green-to-red` | Green (1 s) → yellow (3 s) → red (5 s) | `true` | `1` (one cycle) |
+
+| Animation (`usa/…`) | Behavior | Default `hold_final` | Default `repeats` |
+|---|---|---|---|
+| `blink-yellow` | Blink yellow at 1 Hz (500 ms on / 500 ms off) | `false` | `0` (infinite) |
+| `red-to-green` | Red (1 s) → green (3 s) (no red+yellow phase) | `true` | `1` (one cycle) |
+| `green-to-red` | Green (1 s) → yellow (4 s) → red (1 s) | `true` | `1` (one cycle) |
 
 The payload is an optional JSON object:
 
@@ -263,6 +276,21 @@ Red-to-green transition but restore the prior state on completion:
 ```bash
 mosquitto_pub -h localhost -t "cleware/ampel/pattern/tl/german/red-to-green" \
   -m '{"hold_final":false}'
+```
+
+Red-to-green transition using UK timings (red+amber before green):
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern/tl/uk/red-to-green" -m ""
+```
+
+Green-to-red transition using USA timings (longer yellow phase):
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern/tl/usa/green-to-red" -m ""
+```
+
+Blink yellow at 1 Hz using USA timings:
+```bash
+mosquitto_pub -h localhost -t "cleware/ampel/pattern/tl/usa/blink-yellow" -m ""
 ```
 
 ## Hardware

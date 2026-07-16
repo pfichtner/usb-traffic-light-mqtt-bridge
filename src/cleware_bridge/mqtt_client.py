@@ -283,6 +283,7 @@ class MQTTBridge:
             hold_final=hold_final,
             speed_factor=params.speed_factor,
             repeats=repeats,
+            country=country,
         )
         self._launch_animation(anim_name, params)
 

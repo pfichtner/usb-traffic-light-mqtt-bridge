@@ -141,10 +141,16 @@ TL_TOPIC_PREFIX: str = "pattern/tl/"
 
 # Supported country codes.  New countries can be added by extending this set
 # and providing timing data in TL_TIMINGS (see ADR 014).
-COUNTRIES: frozenset[str] = frozenset({"german"})
+COUNTRIES: frozenset[str] = frozenset({"german", "usa", "uk"})
 
 # Animation names for German traffic lights (StVO-regulated timings).
 GERMAN_TL_ANIMATIONS: frozenset[str] = frozenset({"blink-yellow", "red-to-green", "green-to-red"})
+
+# Animation names for USA traffic lights (no red+yellow before green).
+USA_TL_ANIMATIONS: frozenset[str] = frozenset({"blink-yellow", "red-to-green", "green-to-red"})
+
+# Animation names for UK traffic lights (red+amber before green, amber flash).
+UK_TL_ANIMATIONS: frozenset[str] = frozenset({"blink-yellow", "red-to-green", "green-to-red"})
 
 # Default speed multiplier for traffic light animations.  1.0 uses the
 # regulation timings as-is; 2.0 doubles the speed (halves all durations).
@@ -172,6 +178,7 @@ class AnimParams:
     colors: tuple[Color, ...] = DEFAULT_COLORS
     hold_final: bool = False
     speed_factor: float = DEFAULT_SPEED_FACTOR
+    country: str | None = None
 
     @property
     def infinite(self) -> bool:
@@ -291,8 +298,8 @@ def animation_frames(name: str, params: AnimParams) -> Iterator[list[tuple[froze
         ValueError: If ``name`` is not a known animation. Callers that have
             already validated the name will never see this.
     """
-    if name in GERMAN_TL_ANIMATIONS:
-        cycle = _traffic_light_cycle(name, params)
+    if name in GERMAN_TL_ANIMATIONS or name in USA_TL_ANIMATIONS or name in UK_TL_ANIMATIONS:
+        cycle = _traffic_light_cycle(name, params.country, params)
     elif name == "blink":
         on_frame = frozenset(params.colors)
         off_frame: frozenset[Color] = frozenset()
@@ -351,7 +358,7 @@ _GERMAN_TIMINGS: dict[str, TrafficLightTimings] = {
     "red-to-green": TrafficLightTimings(
         name="red-to-green",
         phases=(
-            TrafficLightPhase(leds=frozenset({Color.RED}), duration_ms=5000),
+            TrafficLightPhase(leds=frozenset({Color.RED}), duration_ms=1000),
             TrafficLightPhase(leds=frozenset({Color.RED, Color.YELLOW}), duration_ms=1000),
             TrafficLightPhase(leds=frozenset({Color.GREEN}), duration_ms=3000),
         ),
@@ -361,7 +368,74 @@ _GERMAN_TIMINGS: dict[str, TrafficLightTimings] = {
     "green-to-red": TrafficLightTimings(
         name="green-to-red",
         phases=(
+            TrafficLightPhase(leds=frozenset({Color.GREEN}), duration_ms=1000),
+            TrafficLightPhase(leds=frozenset({Color.YELLOW}), duration_ms=3000),
+            TrafficLightPhase(leds=frozenset({Color.RED}), duration_ms=5000),
+        ),
+        default_hold_final=True,
+        default_repeats=1,
+    ),
+}
+
+# USA traffic light timings (MUTCD — Manual on Uniform Traffic Control Devices).
+# Key difference: no red+yellow phase before green.
+_USA_TIMINGS: dict[str, TrafficLightTimings] = {
+    "blink-yellow": TrafficLightTimings(
+        name="blink-yellow",
+        phases=(
+            TrafficLightPhase(leds=frozenset({Color.YELLOW}), duration_ms=500),
+            TrafficLightPhase(leds=frozenset(), duration_ms=500),
+        ),
+        default_hold_final=False,
+        default_repeats=0,
+    ),
+    "red-to-green": TrafficLightTimings(
+        name="red-to-green",
+        phases=(
+            TrafficLightPhase(leds=frozenset({Color.RED}), duration_ms=1000),
             TrafficLightPhase(leds=frozenset({Color.GREEN}), duration_ms=3000),
+        ),
+        default_hold_final=True,
+        default_repeats=1,
+    ),
+    "green-to-red": TrafficLightTimings(
+        name="green-to-red",
+        phases=(
+            TrafficLightPhase(leds=frozenset({Color.GREEN}), duration_ms=1000),
+            TrafficLightPhase(leds=frozenset({Color.YELLOW}), duration_ms=4000),
+            TrafficLightPhase(leds=frozenset({Color.RED}), duration_ms=1000),
+        ),
+        default_hold_final=True,
+        default_repeats=1,
+    ),
+}
+
+# UK traffic light timings (Traffic Signs Regulations and General Directions).
+# Key difference: red+amber before green, amber-only flash phase at some intersections.
+_UK_TIMINGS: dict[str, TrafficLightTimings] = {
+    "blink-yellow": TrafficLightTimings(
+        name="blink-yellow",
+        phases=(
+            TrafficLightPhase(leds=frozenset({Color.YELLOW}), duration_ms=500),
+            TrafficLightPhase(leds=frozenset(), duration_ms=500),
+        ),
+        default_hold_final=False,
+        default_repeats=0,
+    ),
+    "red-to-green": TrafficLightTimings(
+        name="red-to-green",
+        phases=(
+            TrafficLightPhase(leds=frozenset({Color.RED}), duration_ms=1000),
+            TrafficLightPhase(leds=frozenset({Color.RED, Color.YELLOW}), duration_ms=500),
+            TrafficLightPhase(leds=frozenset({Color.GREEN}), duration_ms=3000),
+        ),
+        default_hold_final=True,
+        default_repeats=1,
+    ),
+    "green-to-red": TrafficLightTimings(
+        name="green-to-red",
+        phases=(
+            TrafficLightPhase(leds=frozenset({Color.GREEN}), duration_ms=1000),
             TrafficLightPhase(leds=frozenset({Color.YELLOW}), duration_ms=3000),
             TrafficLightPhase(leds=frozenset({Color.RED}), duration_ms=5000),
         ),
@@ -371,7 +445,11 @@ _GERMAN_TIMINGS: dict[str, TrafficLightTimings] = {
 }
 
 # Country code -> animation name -> timings.
-TL_TIMINGS: dict[str, dict[str, TrafficLightTimings]] = {"german": _GERMAN_TIMINGS}
+TL_TIMINGS: dict[str, dict[str, TrafficLightTimings]] = {
+    "german": _GERMAN_TIMINGS,
+    "usa": _USA_TIMINGS,
+    "uk": _UK_TIMINGS,
+}
 
 
 def _scale_timings(
@@ -389,11 +467,16 @@ def _scale_timings(
     return scaled
 
 
-def _traffic_light_cycle(name: str, params: AnimParams) -> list[tuple[frozenset[Color], int]]:
+def _traffic_light_cycle(
+    name: str, country: str | None, params: AnimParams
+) -> list[tuple[frozenset[Color], int]]:
     """Build a single-cycle frame list for a traffic light animation."""
     # Country and animation validation are done by the caller (MQTT dispatch).
-    # Walk TL_TIMINGS to find the matching entry.
-    for country_timings in TL_TIMINGS.values():
-        if name in country_timings:
-            return _scale_timings(country_timings[name], params.speed_factor)
-    raise ValueError(f"Unknown traffic light animation: {name!r}")
+    # Look up timings directly from the specified country.
+    if country is None:
+        raise ValueError(f"Traffic light animation {name!r} requires a country")
+    if country not in TL_TIMINGS:
+        raise ValueError(f"Unknown country: {country!r}")
+    if name not in TL_TIMINGS[country]:
+        raise ValueError(f"Unknown traffic light animation: {name!r} for country {country!r}")
+    return _scale_timings(TL_TIMINGS[country][name], params.speed_factor)

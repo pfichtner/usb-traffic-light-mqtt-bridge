@@ -884,10 +884,10 @@ class TestMQTTBridgeTrafficLightTopic:
         # generated cycle's durations for a small factor.
         from cleware_bridge.models import AnimParams, animation_frames
 
-        params = AnimParams(speed_factor=2.0)
+        params = AnimParams(speed_factor=2.0, country="german")
         cycle = next(animation_frames("red-to-green", params))
         assert cycle == [
-            (frozenset({Color.RED}), 2500),
+            (frozenset({Color.RED}), 500),
             (frozenset({Color.RED, Color.YELLOW}), 500),
             (frozenset({Color.GREEN}), 1500),
         ]
