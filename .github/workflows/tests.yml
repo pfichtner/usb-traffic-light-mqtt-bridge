@@ -44,7 +44,6 @@ jobs:
             --cov-report=term-missing \
             -v
       - name: Upload coverage to Codecov
-        if: ${{ secrets.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml
