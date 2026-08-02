@@ -30,28 +30,63 @@ class TestCreateTrafficLight:
         monkeypatch.setenv("LIGHT_BACKEND", "cleware")
         mock_dev = MagicMock()
         mock_dev.idProduct = 0x0008
-        with patch("cleware_bridge.cleware.usb.core.find", return_value=mock_dev):
-            light = _create_traffic_light(MagicMock())
+        mock_dev.serial_number = None
+        mock_dev.bus = 1
+        mock_dev.port_numbers = (1,)
+        mock_dev.is_kernel_driver_active.return_value = False
+        config = MagicMock()
+        config.device_id = "default"
+        with patch("cleware_bridge.cleware.usb.core.find", return_value=[mock_dev]):
+            light = _create_traffic_light(config)
             from cleware_bridge.cleware import ClewareTrafficLight
 
             assert isinstance(light, ClewareTrafficLight)
 
+    def test_cleware_backend_no_device_exits_abnormally(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LIGHT_BACKEND", "cleware")
+        with (
+            patch("cleware_bridge.cleware.usb.core.find", return_value=None),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _create_traffic_light(MagicMock())
+        assert exc_info.value.code == 1
+
+    def test_cleware_backend_exception_exits_abnormally(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LIGHT_BACKEND", "cleware")
+        with (
+            patch(
+                "cleware_bridge.cleware.usb.core.find",
+                side_effect=Exception("USB error"),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _create_traffic_light(MagicMock())
+        assert exc_info.value.code == 1
+
     def test_auto_backend_no_device_exits_abnormally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LIGHT_BACKEND", raising=False)
-        with patch("cleware_bridge.cleware.usb.core.find", return_value=None):
-            with pytest.raises(SystemExit) as exc_info:
-                _create_traffic_light(MagicMock())
-            assert exc_info.value.code == 1
+        with (
+            patch("cleware_bridge.cleware.usb.core.find", return_value=None),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _create_traffic_light(MagicMock())
+        assert exc_info.value.code == 1
 
     def test_auto_backend_exception_exits_abnormally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LIGHT_BACKEND", raising=False)
-        with patch(
-            "cleware_bridge.cleware.usb.core.find",
-            side_effect=Exception("USB error"),
+        with (
+            patch(
+                "cleware_bridge.cleware.usb.core.find",
+                side_effect=Exception("USB error"),
+            ),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            with pytest.raises(SystemExit) as exc_info:
-                _create_traffic_light(MagicMock())
-            assert exc_info.value.code == 1
+            _create_traffic_light(MagicMock())
+        assert exc_info.value.code == 1
 
 
 class TestMainFunction:

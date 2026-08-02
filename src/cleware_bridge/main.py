@@ -45,19 +45,25 @@ def _create_traffic_light(config: BridgeConfig) -> TrafficLight:
 
     if backend == "cleware":
         logger.info("Using ClewareTrafficLight (LIGHT_BACKEND=cleware)")
-        return ClewareTrafficLight(device_id=config.device_id)
+        return _init_cleware_traffic_light(config.device_id)
 
     # Auto-detect: try real hardware, otherwise fail loudly
+    return _init_cleware_traffic_light(config.device_id)
+
+
+def _init_cleware_traffic_light(device_id: str) -> ClewareTrafficLight:
+    """Initialize the Cleware hardware and fail fast if it is not available."""
     try:
-        light = ClewareTrafficLight(device_id=config.device_id)
-        if light.is_connected():
-            return light
+        light = ClewareTrafficLight(device_id=device_id)
     except Exception as exc:
         logger.error("Could not initialize Cleware hardware: %s", exc)
         raise SystemExit(1) from exc
 
-    logger.error("No Cleware device found. Set LIGHT_BACKEND=mock to run without hardware.")
-    raise SystemExit(1)
+    if not light.is_connected():
+        logger.error("No Cleware device found. Set LIGHT_BACKEND=mock to run without hardware.")
+        raise SystemExit(1)
+
+    return light
 
 
 def main() -> None:
