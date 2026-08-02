@@ -74,8 +74,49 @@ All settings via environment variables:
 | `MQTT_PASSWORD` | `` | MQTT password |
 | `MQTT_TOPIC_PREFIX` | `cleware/ampel/` | Topic prefix for commands |
 | `LOG_LEVEL` | `INFO` | Log level (DEBUG, INFO, WARNING, ERROR) |
-| `DEVICE_ID` | `default` | Device ID for multiple traffic lights |
+| `DEVICE_ID` | `default` | Device ID for multiple traffic lights (see below) |
 | `LIGHT_BACKEND` | `auto` | Hardware backend: `auto`, `cleware`, `mock` |
+
+### Multiple Traffic Lights (`DEVICE_ID`)
+
+The bridge supports more than one Cleware USB traffic light on the same host.
+`DEVICE_ID` selects which physical device to use.
+
+Supported values:
+
+| Value | Meaning |
+|---|---|
+| `default` | Pick the only connected device. Fails with a clear error if multiple devices are present. |
+| `<serial>` | Use the USB serial number (e.g. `ABC123`). Most stable when every device has a unique serial. |
+| `<bus>:<port>` | Use the physical USB topology (e.g. `1:2.3`). Stable across reconnects as long as the device stays in the same port. |
+
+How to find a valid value:
+
+1. Connect all traffic lights.
+2. Start the bridge with `DEVICE_ID=default` (or omit the variable).
+3. If multiple devices are detected, the error message lists the available
+   primary identifiers and their port paths:
+   ```
+   Multiple Cleware traffic lights detected. Configure DEVICE_ID to uniquely identify one of them.
+   Detected devices:
+     - ABC123 (port 1:2.3)
+     - DEF456 (port 1:4.1)
+   ```
+4. Set `DEVICE_ID` to the serial number or port path of the device you want to control.
+
+Fallback behavior:
+
+- If serial numbers are unique, the bridge uses them as the primary identifier.
+- If a device has no serial or multiple devices share the same serial, the bridge falls back to the physical USB port path.
+- The USB device address is never used as the primary identifier because it changes after a reconnect.
+
+Example:
+
+```bash
+DEVICE_ID=ABC123 python -m cleware_bridge
+# or
+DEVICE_ID=1:2.3 LIGHT_BACKEND=cleware docker compose up -d
+```
 
 ## MQTT Topics
 

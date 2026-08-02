@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
+from collections import Counter
+from dataclasses import dataclass
 
 import usb.core
 import usb.util
@@ -13,6 +15,50 @@ from .models import Color, LEDState
 from .traffic_light import TrafficLight
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _DeviceCandidate:
+    """A discovered Cleware USB device with stable identifiers."""
+
+    device: usb.core.Device
+    serial: str | None
+    port_path: str
+    primary_id: str = ""
+
+    def set_primary_id(self, serial_counts: Counter[str]) -> None:
+        """Choose the most stable identifier for this device.
+
+        Unique serial numbers are preferred. When serial numbers are missing or
+        duplicated, the physical USB topology (port path) is used because it
+        survives reconnects on the same port, unlike the transient device address.
+        """
+        if self.serial and serial_counts[self.serial] == 1:
+            self.primary_id = self.serial
+        else:
+            self.primary_id = self.port_path
+
+
+def _read_serial(device: usb.core.Device) -> str | None:
+    """Read the USB serial number, returning None if unavailable."""
+    try:
+        serial = device.serial_number
+    except usb.core.USBError:
+        return None
+    if serial is None:
+        return None
+    return str(serial)
+
+
+def _port_path(device: usb.core.Device) -> str:
+    """Build a stable identifier from the USB bus/port topology.
+
+    The bus number plus the physical port path is stable across reconnects as
+    long as the device stays plugged into the same port.
+    """
+    ports = device.port_numbers or ()
+    port_str = ".".join(str(port) for port in ports)
+    return f"{device.bus}:{port_str}"
 
 
 class ClewareTrafficLight(TrafficLight):
@@ -32,23 +78,115 @@ class ClewareTrafficLight(TrafficLight):
         self._last_attempt = 0.0
         self._find_device()
 
-    def _find_device(self) -> None:
-        """Search for a connected Cleware USB device."""
-        for product_id in (self.PRODUCT_ORIGINAL, self.PRODUCT_SWITCH):
-            dev = usb.core.find(idVendor=self.VENDOR_ID, idProduct=product_id)
-            if dev is not None:
-                self._device = dev
-                self._connected = True
-                logger.info(
-                    "Cleware device found: vendor=0x%04X product=0x%04X",
-                    self.VENDOR_ID,
-                    product_id,
+    def _enumerate_devices(self) -> list[_DeviceCandidate]:
+        """Enumerate all connected Cleware USB traffic lights."""
+        candidates: list[_DeviceCandidate] = []
+        found = usb.core.find(
+            idVendor=self.VENDOR_ID,
+            find_all=True,
+        )
+        if found is None:
+            return candidates
+        for device in found:
+            if device.idProduct not in (self.PRODUCT_ORIGINAL, self.PRODUCT_SWITCH):
+                continue
+            candidates.append(
+                _DeviceCandidate(
+                    device=device,
+                    serial=_read_serial(device),
+                    port_path=_port_path(device),
                 )
-                self._ensure_detached()
-                return
-        self._device = None
-        self._connected = False
-        logger.warning("Cleware device not found (device_id=%s)", self._device_id)
+            )
+        return candidates
+
+    def _select_device(self, candidates: list[_DeviceCandidate]) -> _DeviceCandidate:
+        """Select a unique device from the candidates based on DEVICE_ID."""
+        if not candidates:
+            if self._device_id == "default":
+                msg = "No Cleware traffic light found."
+                raise RuntimeError(msg)
+            msg = (
+                f"Configured device {self._device_id!r} not found. "
+                "No Cleware traffic light detected."
+            )
+            raise ValueError(msg)
+
+        serials = [candidate.serial for candidate in candidates if candidate.serial]
+        serial_counts = Counter(serials)
+        for candidate in candidates:
+            candidate.set_primary_id(serial_counts)
+
+        if self._device_id == "default":
+            if len(candidates) == 1:
+                return candidates[0]
+            lines = "\n".join(
+                f"  - {candidate.primary_id} (port {candidate.port_path})"
+                for candidate in candidates
+            )
+            msg = (
+                "Multiple Cleware traffic lights detected. "
+                "Configure DEVICE_ID to uniquely identify one of them.\n"
+                f"Detected devices:\n{lines}"
+            )
+            raise ValueError(msg)
+
+        primary_map = {candidate.primary_id: candidate for candidate in candidates}
+        serial_map: dict[str, list[_DeviceCandidate]] = {}
+        port_map = {candidate.port_path: candidate for candidate in candidates}
+        for candidate in candidates:
+            if candidate.serial:
+                serial_map.setdefault(candidate.serial, []).append(candidate)
+
+        if self._device_id in primary_map:
+            return primary_map[self._device_id]
+        if self._device_id in serial_map:
+            matches = serial_map[self._device_id]
+            if len(matches) > 1:
+                lines = "\n".join(f"  - {candidate.port_path}" for candidate in matches)
+                msg = (
+                    f"DEVICE_ID {self._device_id!r} matches multiple devices "
+                    "with the same serial number. Use a port path to disambiguate:\n"
+                    f"{lines}"
+                )
+                raise ValueError(msg)
+            return matches[0]
+        if self._device_id in port_map:
+            return port_map[self._device_id]
+
+        lines = "\n".join(
+            f"  - {candidate.primary_id} (port {candidate.port_path})" for candidate in candidates
+        )
+        msg = f"Configured device {self._device_id!r} not found.\nDetected devices:\n{lines}"
+        raise ValueError(msg)
+
+    def _find_device(self) -> None:
+        """Search for a connected Cleware USB device matching DEVICE_ID."""
+        candidates = self._enumerate_devices()
+        try:
+            selected = self._select_device(candidates)
+        except ValueError as exc:
+            self._device = None
+            self._connected = False
+            logger.error("%s", exc)
+            raise
+        except RuntimeError as exc:
+            self._device = None
+            self._connected = False
+            logger.warning("%s", exc)
+            return
+
+        for candidate in candidates:
+            if candidate.device is not selected.device:
+                usb.util.dispose_resources(candidate.device)
+
+        self._device = selected.device
+        self._connected = True
+        logger.info(
+            "Cleware device selected: device_id=%s, port=%s",
+            selected.primary_id,
+            selected.port_path,
+        )
+        self._ensure_detached()
 
     def _ensure_detached(self) -> None:
         """Detach kernel driver if active."""
@@ -143,7 +281,11 @@ class ClewareTrafficLight(TrafficLight):
             return
         self._last_attempt = now
         logger.info("Attempting to reconnect to Cleware device...")
-        self._find_device()
+        try:
+            self._find_device()
+        except ValueError as exc:
+            logger.warning("Failed to reconnect to Cleware device: %s", exc)
+            self._connected = False
 
     def all_off(self) -> None:
         """Turn off all LEDs."""
